@@ -4,6 +4,7 @@ import xarray
 from xarray import Dataset
 
 from src.settings import GlobalSettings
+from src.tide_gauge_station import read_and_create_stations
 
 
 def read_data(global_settings: GlobalSettings) -> tuple[Dataset, Dataset, dict[Any, Any]]:
@@ -14,5 +15,5 @@ def read_data(global_settings: GlobalSettings) -> tuple[Dataset, Dataset, dict[A
     """
     sea_level_data = xarray.open_dataset(global_settings.sea_level_data_path)
     clustering_data = xarray.open_dataset(global_settings.clustering_data_path)
-    tide_gauge_data = {}
+    tide_gauge_data = read_and_create_stations(global_settings.tide_gauge_data_folder)
     return sea_level_data, clustering_data, tide_gauge_data
