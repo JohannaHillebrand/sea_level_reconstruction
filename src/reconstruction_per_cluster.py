@@ -1,48 +1,51 @@
-import numpy as np
 import xarray
 
 from src.tide_gauge_station import TideGaugeStation
 
 
-def extract_clusters_from_xarray_dataset(clustering_data: xarray.Dataset):
+def select_tide_gauge_stations(cluster_id: int, grid_point_ids: list[tuple[int, int]],
+                               tide_gauge_data: dict[int, TideGaugeStation]):
     """
-    Extract the clusters
-    :param clustering_data:
-    :return:
-    """
-    clusters = {}
-    cluster_data = clustering_data["__xarray_dataarray_variable__"].values
-    unique_clusters = np.unique(cluster_data)
-    unique_clusters = unique_clusters[~np.isnan(unique_clusters)]
-    extended_lons, extended_lats = np.meshgrid(clustering_data['longitude'].values, clustering_data['latitude'].values)
-    print(extended_lats.shape)
-    print(extended_lons.shape)
-
-    cluster_id_to_lat_lon_pairs = {}
-    cluster_id_to_grid_point_id = {}
-    for cluster_id in unique_clusters:
-        if np.isnan(cluster_id):
-            continue
-        # find lat/lon pairs that belong to the cluster
-        current_cluster_mask = cluster_data == cluster_id
-        lat_lon_pairs = list(zip(extended_lats[current_cluster_mask], extended_lons[current_cluster_mask]))
-        cluster_id_to_lat_lon_pairs[cluster_id] = lat_lon_pairs
-        # find the grid point ids that belong to the cluster
-        grid_point_ids = np.where(current_cluster_mask)[0]
-        print(grid_point_ids)
-        print(lat_lon_pairs)
-        exit()
-    return clusters
-
-
-def start_reconstruction(sea_level_data: xarray.Dataset, clustering_data: xarray.Dataset,
-                         tide_gauge_data: dict[int, TideGaugeStation]):
-    """
-    Start the reconstruction
-    :param sea_level_data:
-    :param clustering_data:
+    Select suitable tide gauge stations for reconstruction
+    :param cluster_id:
+    :param grid_point_ids:
     :param tide_gauge_data:
     :return:
     """
-    clusters = extract_clusters_from_xarray_dataset(clustering_data)
+    pass
+
+
+def assign_tide_gauge_stations_to_cluster(cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float, float]]],
+                                          tide_gauge_data: dict[int, TideGaugeStation]):
+    """
+    Assign tide gauge stations to clusters
+    :param cluster_id_to_lat_lon_pairs:
+    :param tide_gauge_data:
+    :return:
+    """
+    cluster_id_to_tide_gauge = {}
+    pass
+
+
+def start_reconstruction(sea_level_data: xarray.Dataset,
+                         cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float, float]]],
+                         cluster_id_to_grid_point_id: dict[int, tuple[int, int]],
+                         tide_gauge_data: dict[int, TideGaugeStation]):
+    """
+    Start the reconstruction
+    :param cluster_id_to_grid_point_id:
+    :param cluster_id_to_lat_lon_pairs:
+    :param sea_level_data:
+    :param tide_gauge_data:
+    :return:
+    """
+    sea_level_data_array = sea_level_data['sla'].values
+    cluster_id_to_tide_gauge = assign_tide_gauge_stations_to_cluster(cluster_id_to_lat_lon_pairs, tide_gauge_data)
+    # for each cluster, perform reconstruction
+    for cluster_id, grid_point_ids in cluster_id_to_grid_point_id.items():
+        # first identify suitable tide gauge stations
+        tide_gauge_stations = select_tide_gauge_stations(cluster_id, grid_point_ids, tide_gauge_data)
+        # perform PCA on the sea level data
+        # fit the tide gauge data to the eof
+        pass
     return None

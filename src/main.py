@@ -18,9 +18,11 @@ from src.preprocessing import read_data
 
 def main():
     global_settings = settings.GlobalSettings()
-    sea_level_data, clustering_data, tide_gauge_data = read_data(global_settings)
+    sea_level_data, cluster_id_to_lat_lon_pairs, cluster_id_to_grid_point_id, tide_gauge_data = read_data(
+        global_settings)
 
-    reconstruction_per_cluster.start_reconstruction(sea_level_data, clustering_data, tide_gauge_data)
+    reconstruction_per_cluster.start_reconstruction(sea_level_data, cluster_id_to_lat_lon_pairs,
+                                                    cluster_id_to_grid_point_id, tide_gauge_data)
     pass
 
 
