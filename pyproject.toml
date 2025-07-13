@@ -32,4 +32,4 @@ build-backend = "poetry.core.masonry.api"
 package-mode = false
 
 [tool.poetry.scripts]
-sea_level_reconstruction = "src.main:main"
+sea_level_reconstruction = "main:main"
