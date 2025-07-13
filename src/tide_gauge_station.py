@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from loguru import logger
 
@@ -10,6 +11,40 @@ class TideGaugeStation:
     latitude: float
     longitude: float
     timeseries: dict
+    timeseries_corrected_reference_datum: dict
+
+    def correct_reference_datum(self, time_series_of_closest_grid_point, time):
+        """
+        Correct the reference datum of the tide gauge by fitting it to the satellite sea level data
+        :param time:
+        :param time_series_of_closest_grid_point:
+        :return:
+        """
+        overlapping_time_steps = []
+        sla_timeseries = []
+        tide_gauge_timeseries = []
+        for i, sla_date in enumerate(time):
+            py_sla_date = sla_date.astype('M8[D]').astype(datetime)
+            for tide_gauge_date in self.timeseries.keys():
+                if py_sla_date.year == tide_gauge_date.year and py_sla_date.month == tide_gauge_date.month:
+                    if not self.timeseries[tide_gauge_date] == -99999:
+                        overlapping_time_steps.append(tide_gauge_date)
+                        sla_timeseries.append(time_series_of_closest_grid_point[i])
+                        tide_gauge_timeseries.append(self.timeseries[tide_gauge_date])
+        sum_of_differences = 0
+        # calculate mean difference between the two time series
+        # correct the entire tide gauge time series by adding the mean difference
+        for i in range(len(overlapping_time_steps)):
+            sum_of_differences += (sla_timeseries[i] - tide_gauge_timeseries[i])
+        mean_difference = sum_of_differences / len(overlapping_time_steps)
+        print(mean_difference)
+        tide_gauge_timeseries_corrected_reference_datum = {}
+        for key, value in self.timeseries.items():
+            if value == -99999:
+                tide_gauge_timeseries_corrected_reference_datum[key] = -99999
+                continue
+            tide_gauge_timeseries_corrected_reference_datum[key] = value + mean_difference
+        self.timeseries_corrected_reference_datum = tide_gauge_timeseries_corrected_reference_datum
 
 
 def read_and_create_stations(path: str) -> dict[int:TideGaugeStation]:
@@ -48,12 +83,16 @@ def read_and_create_stations(path: str) -> dict[int:TideGaugeStation]:
                         if sea_level == -99999:
                             no_data_values += 1
                         else:
+                            # convert sea level to meters (from mm)
+                            sea_level /= 1000
                             valid_values += 1
-                        station_timeseries[date] = sea_level
+                        real_date = year_fraction_to_date(date)
+                        station_timeseries[real_date] = sea_level
                 current_stations[station_id] = TideGaugeStation(id=station_id, name=station_name,
                                                                 latitude=station_latitude,
                                                                 longitude=station_longitude,
-                                                                timeseries=station_timeseries)
+                                                                timeseries=station_timeseries,
+                                                                timeseries_corrected_reference_datum={})
             except FileNotFoundError:
                 logger.error(f"File not found: {path}/data/{station_id}.rlrdata")
     logger.info(f"Flag counter: {flag_counter}")
@@ -61,3 +100,15 @@ def read_and_create_stations(path: str) -> dict[int:TideGaugeStation]:
     logger.info(f"Valid values: {valid_values}")
     logger.info(f"Number of stations: {len(current_stations)}")
     return current_stations
+
+
+def year_fraction_to_date(year_fraction: float) -> datetime.date:
+    year = int(year_fraction)
+    start_of_year = datetime(year, 1, 1)
+    days_in_year = 366 if is_leap_year(year) else 365
+    fraction = year_fraction - year
+    return (start_of_year + timedelta(days=fraction * days_in_year)).date()
+
+
+def is_leap_year(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
