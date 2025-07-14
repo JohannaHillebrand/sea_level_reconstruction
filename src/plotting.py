@@ -4,15 +4,21 @@ import random
 from datetime import datetime
 
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import geopandas
 import matplotlib.colors as mcolors
+import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
+import numpy as np
+import pandas as pd
 import shapely
 import xarray
+import xarray as xr
 from matplotlib import pyplot as plt
-from shapely import Point
+from shapely.geometry.point import Point
 from shapely.ops import unary_union
 
+from src.settings.settings import GlobalSettings
 from src.tide_gauge_station import TideGaugeStation
 
 
@@ -269,10 +275,14 @@ def plot_regions_with_tide_gauges(land_gdf: geopandas.GeoDataFrame, output_path:
 def plot_reconstruction_error_over_time(mean_reconstruction_error_for_date: dict[datetime, float],
                                         max_reconstruction_error_for_date: dict[datetime, float],
                                         min_reconstruction_error_for_date: dict[datetime, float], cluster_id,
-                                        out_dir: str, number_of_testing_tide_gauges_for_date,
-                                        number_of_training_tide_gauges_for_date):
+                                        out_dir: str, number_of_testing_tide_gauges_for_date: dict[datetime, int],
+                                        number_of_training_tide_gauges_for_date: dict[datetime, int],
+                                        explained_variance_ratio: float):
     """
     Plot the reconstruction error over time for a specific cluster
+    :param explained_variance_ratio:
+    :param number_of_training_tide_gauges_for_date:
+    :param number_of_testing_tide_gauges_for_date:
     :param out_dir:
     :param mean_reconstruction_error_for_date:
     :param max_reconstruction_error_for_date:
@@ -282,21 +292,137 @@ def plot_reconstruction_error_over_time(mean_reconstruction_error_for_date: dict
     """
     if (mean_reconstruction_error_for_date is not None and max_reconstruction_error_for_date is not None and
             min_reconstruction_error_for_date is not None):
-        plt.figure(figsize=(20, 10))
-        plt.plot(number_of_testing_tide_gauges_for_date.keys(), number_of_testing_tide_gauges_for_date.values(),
-                 linestyle='--',
-                 color='pink', label="Number of Testing Tide Gauges")
-        plt.plot(number_of_training_tide_gauges_for_date.keys(), number_of_training_tide_gauges_for_date.values(),
-                 linestyle='--', color='green', label="Number of Training Tide Gauges")
-        plt.plot(mean_reconstruction_error_for_date.keys(), mean_reconstruction_error_for_date.values(),
-                 label="Mean Reconstruction Error", color="blue")
-        plt.fill_between(mean_reconstruction_error_for_date.keys(), min_reconstruction_error_for_date.values(),
-                         max_reconstruction_error_for_date.values(), color='lightblue', alpha=0.5,
-                         label="Min/Max Reconstruction Error")
-        plt.title(f"Reconstruction Error for Cluster {cluster_id}")
-        plt.xlabel("Date")
-        plt.ylabel("Reconstruction Error")
-        plt.legend()
-        plt.grid()
-        plt.savefig(f"{out_dir}/reconstruction_error_cluster_{cluster_id}.png", dpi=300)
+        fig, ax1 = plt.subplots(figsize=(20, 10))  # Create figure and primary axes (ax1)
+
+        # --- Plotting on the Left Y-axis (Reconstruction Error) ---
+        ax1.plot(mean_reconstruction_error_for_date.keys(), mean_reconstruction_error_for_date.values(),
+                 label="Mean Reconstruction Error", color="blue", linewidth=2)
+        ax1.fill_between(mean_reconstruction_error_for_date.keys(),
+                         min_reconstruction_error_for_date.values(),
+                         max_reconstruction_error_for_date.values(),
+                         color='lightblue', alpha=0.5,
+                         label="Min/Max Reconstruction Error Range")
+
+        ax1.set_xlabel("Date", fontsize=14)
+        ax1.set_ylabel("Reconstruction Error", color="blue", fontsize=14)
+        ax1.tick_params(axis='y', labelcolor="blue")  # Set tick color for ax1
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        ax1.set_yticks([0, 0.5, 1, 1.5, 2, 3, 5, 10])  # Set specific y-ticks
+
+        # --- Create a Second Y-axis (Right side) for Tide Gauge Counts ---
+        ax2 = ax1.twinx()  # Create a twin Axes sharing the x-axis
+
+        ax2.plot(number_of_testing_tide_gauges_for_date.keys(), number_of_testing_tide_gauges_for_date.values(),
+                 linestyle='--', color='lightgreen', label="Number of Testing Tide Gauges", linewidth=2)
+        ax2.plot(number_of_training_tide_gauges_for_date.keys(), number_of_training_tide_gauges_for_date.values(),
+                 linestyle='--', color='darkgreen', label="Number of Training Tide Gauges", linewidth=2)
+
+        ax2.set_ylabel("Number of Tide Gauges", color="green", fontsize=14)
+        ax2.tick_params(axis='y', labelcolor="green")  # Set tick color for ax2
+        ax2.set_yticks([0, 2, 4, 8, 10, 20, 30, 40, 50])  # Set specific y-ticks for the second axis
+
+        # --- Combine Legends from both axes ---
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=12)  # Place combined legend
+
+        plt.title(
+            f"Reconstruction Error and Tide Gauge Counts for Cluster {cluster_id}, explained variance: "
+            f"{explained_variance_ratio}",
+            fontsize=16)
+        fig.tight_layout()  # Adjust layout to prevent labels from overlapping
+
+        # Save the figure
+        file_path = f"{out_dir}/reconstruction_error_cluster_{cluster_id}.png"
+        plt.savefig(file_path, dpi=300)
     return
+
+
+def plot_global_mean_sea_level(global_mean_sea_level_time_series: dict[datetime, float],
+                               average_tide_gauge_time_series: dict[datetime, float],
+                               reference_gmsl: dict[datetime, float], global_settings: GlobalSettings) -> None:
+    """
+    Plot the global mean sea level time series and the average tide gauge time series and the cluster-weighted
+    average tide gauge time series.
+    :param global_settings:
+    :param global_mean_sea_level_time_series:
+    :param average_tide_gauge_time_series:
+    :param reference_gmsl:
+    :return:
+    """
+    # sort the time series by date
+    global_mean_sea_level_time_series = dict(sorted(global_mean_sea_level_time_series.items()))
+    average_tide_gauge_time_series = dict(sorted(average_tide_gauge_time_series.items()))
+    reference_gmsl = dict(sorted(reference_gmsl.items()))
+    plt.figure(figsize=(20, 10))
+    plt.plot(average_tide_gauge_time_series.keys(), average_tide_gauge_time_series.values(),
+             label="Average tide gauge GMSL",
+             color="red", linewidth=2)
+    plt.plot(global_mean_sea_level_time_series.keys(), global_mean_sea_level_time_series.values(),
+             label="Cluster weighted average tide gauge GMSL", color="green", linewidth=2)
+    plt.plot(reference_gmsl.keys(), reference_gmsl.values(), label="Satellite GMSL", color="blue", linewidth=2)
+    plt.xlabel("Date", fontsize=14)
+    plt.ylabel("Global Mean Sea Level (m)", fontsize=14)
+    plt.title("Global Mean Sea Level Time Series", fontsize=16)
+    plt.legend(fontsize=12)
+    plt.savefig(f"{global_settings.output_path}/global_mean_sea_level.png", dpi=300)
+    return None
+
+
+def plot_time_series(first_component: np.array, out_dir: str, name: str, sea_level_anomaly_data: xr.Dataset):
+    """
+    Plot a given time series
+    :param sea_level_anomaly_data:
+    :param name:
+    :param first_component:
+    :param out_dir:
+    :return:
+    """
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    time_steps = sea_level_anomaly_data['time'].values
+    date_times = pd.to_datetime(time_steps)
+
+    fig, ax = plt.subplots(figsize=(15, 6))
+    ax.plot(date_times, first_component)
+
+    # Set the locator to show a tick for every year
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    # Set the formatter to show the full date
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Sea level in meters')
+    ax.set_title(f"{name}")
+
+    # Rotate and align the tick labels so they don't overlap
+    fig.autofmt_xdate()
+
+    plt.savefig(os.path.join(out_dir, f'{name}.png'))
+    plt.close(fig)
+    return None
+
+
+def plot_eof(eof_to_plot: np.array, output_dir: str, name: str):
+    """
+    Plot a given EOF
+    :param eof_to_plot:
+    :param output_dir:
+    :param name:
+    :return:
+    """
+    # Define coordinate extent (longitude/latitude or other units)
+    extent = [-180, 180, -90, 90]  # [xmin, xmax, ymin, ymax]
+
+    # Plot using a projection (PlateCarree = regular lat/lon grid)
+    fig, ax = plt.subplots(subplot_kw={'projection': ccrs.PlateCarree()})
+    im = ax.imshow(eof_to_plot, extent=extent, origin='lower', cmap='viridis')
+
+    # Add geographic features
+    ax.coastlines(resolution='110m', linewidth=0.5)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+    ax.add_feature(cfeature.LAND, facecolor='lightgray')
+    plt.colorbar(im, label='Sea Level (m)')
+    plt.title(f"{name}")
+    plt.savefig(os.path.join(output_dir, f'{name}.pdf'), dpi=1000)
+    plt.close()

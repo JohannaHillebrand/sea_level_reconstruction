@@ -10,7 +10,7 @@
 # TODO: compare
 import os
 
-from src import reconstruction_per_cluster
+from src import reconstruction_per_cluster, compute_global_mean_sea_level, calculate_eofs_for_entire_dataset
 from src.preprocessing import read_data
 from src.settings.settings import GlobalSettings
 
@@ -22,13 +22,24 @@ def main():
     sea_level_data, cluster_id_to_lat_lon_pairs, cluster_id_to_grid_point_id, tide_gauge_data = read_data(
         global_settings)
 
-    reconstruction_per_cluster.start_reconstruction(sea_level_data, cluster_id_to_lat_lon_pairs,
-                                                    cluster_id_to_grid_point_id, tide_gauge_data,
-                                                    global_settings.timeframe, global_settings)
+    if global_settings.plot_eofs_for_entire_globe:
+        current_outdir = "../output/components_entire_globe"
+        if not os.path.exists(current_outdir):
+            os.makedirs(current_outdir)
+        calculate_eofs_for_entire_dataset.start(sea_level_data, current_outdir)
+
+    if global_settings.reconstruction:
+        reconstruction_per_cluster.start_reconstruction(sea_level_data, cluster_id_to_lat_lon_pairs,
+                                                        cluster_id_to_grid_point_id, tide_gauge_data,
+                                                        global_settings.timeframe, global_settings)
 
     # calculate global mean sea level, by calculating the mean of the tide gauges in a given cluster, then weight the
     # resulting time series by the area of the cluster, check if the result is close to the global mean sea level as
     # calculated from the satellite data
+    if global_settings.calc_gmsl:
+        compute_global_mean_sea_level.start_calculating_gmsl(sea_level_data, cluster_id_to_lat_lon_pairs,
+                                                             cluster_id_to_grid_point_id, tide_gauge_data,
+                                                             global_settings)
 
 
 if __name__ == '__main__':
