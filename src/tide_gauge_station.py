@@ -37,7 +37,6 @@ class TideGaugeStation:
         for i in range(len(overlapping_time_steps)):
             sum_of_differences += (sla_timeseries[i] - tide_gauge_timeseries[i])
         mean_difference = sum_of_differences / len(overlapping_time_steps)
-        print(mean_difference)
         tide_gauge_timeseries_corrected_reference_datum = {}
         for key, value in self.timeseries.items():
             if value == -99999:

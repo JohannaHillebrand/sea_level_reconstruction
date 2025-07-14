@@ -7,7 +7,7 @@ from loguru import logger
 from xarray import Dataset
 
 from src import plotting
-from src.settings import GlobalSettings
+from src.settings.settings import GlobalSettings
 from src.tide_gauge_station import read_and_create_stations, TideGaugeStation
 
 

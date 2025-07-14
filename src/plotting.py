@@ -1,6 +1,7 @@
 import colorsys
 import os
 import random
+from datetime import datetime
 
 import cartopy.crs as ccrs
 import geopandas
@@ -263,3 +264,39 @@ def plot_regions_with_tide_gauges(land_gdf: geopandas.GeoDataFrame, output_path:
     # plt.savefig(os.path.join(output_path, f"{name}.svg"))
     plt.savefig(os.path.join(output_path, f"{name}.png"), bbox_inches="tight")
     plt.close()
+
+
+def plot_reconstruction_error_over_time(mean_reconstruction_error_for_date: dict[datetime, float],
+                                        max_reconstruction_error_for_date: dict[datetime, float],
+                                        min_reconstruction_error_for_date: dict[datetime, float], cluster_id,
+                                        out_dir: str, number_of_testing_tide_gauges_for_date,
+                                        number_of_training_tide_gauges_for_date):
+    """
+    Plot the reconstruction error over time for a specific cluster
+    :param out_dir:
+    :param mean_reconstruction_error_for_date:
+    :param max_reconstruction_error_for_date:
+    :param min_reconstruction_error_for_date:
+    :param cluster_id:
+    :return:
+    """
+    if (mean_reconstruction_error_for_date is not None and max_reconstruction_error_for_date is not None and
+            min_reconstruction_error_for_date is not None):
+        plt.figure(figsize=(20, 10))
+        plt.plot(number_of_testing_tide_gauges_for_date.keys(), number_of_testing_tide_gauges_for_date.values(),
+                 linestyle='--',
+                 color='pink', label="Number of Testing Tide Gauges")
+        plt.plot(number_of_training_tide_gauges_for_date.keys(), number_of_training_tide_gauges_for_date.values(),
+                 linestyle='--', color='green', label="Number of Training Tide Gauges")
+        plt.plot(mean_reconstruction_error_for_date.keys(), mean_reconstruction_error_for_date.values(),
+                 label="Mean Reconstruction Error", color="blue")
+        plt.fill_between(mean_reconstruction_error_for_date.keys(), min_reconstruction_error_for_date.values(),
+                         max_reconstruction_error_for_date.values(), color='lightblue', alpha=0.5,
+                         label="Min/Max Reconstruction Error")
+        plt.title(f"Reconstruction Error for Cluster {cluster_id}")
+        plt.xlabel("Date")
+        plt.ylabel("Reconstruction Error")
+        plt.legend()
+        plt.grid()
+        plt.savefig(f"{out_dir}/reconstruction_error_cluster_{cluster_id}.png", dpi=300)
+    return
