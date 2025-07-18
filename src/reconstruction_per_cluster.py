@@ -1,4 +1,8 @@
+import cProfile
+import multiprocessing
+import pstats
 import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
 import numpy as np
@@ -15,10 +19,10 @@ from src.tide_gauge_station import TideGaugeStation
 
 def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]], sea_level_data: xarray.Dataset,
                         tide_gauge_stations: dict[int, TideGaugeStation],
-                        cluster_id_to_tide_gauge: dict[int, list[int]], timeframe: tuple[int, int],
-                        grid_points: list[tuple[float, float]], output_path: str,
+                        cluster_id_to_tide_gauge: dict[int, list[int]], grid_points: list[tuple[float, float]],
+                        output_path: str,
                         tide_gauge_to_lat_lon: dict[int, tuple[float, float]], number_of_principal_components: int,
-                        settings: GlobalSettings) -> None:
+                        settings: GlobalSettings):
     """
     Reconstruct a cluster
     :param settings:
@@ -31,7 +35,6 @@ def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]
     :param sea_level_data:
     :param tide_gauge_stations:
     :param cluster_id_to_tide_gauge:
-    :param timeframe:
     :return:
     """
     # create data array for pca
@@ -75,12 +78,13 @@ def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]
      number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date) = (
         reconstruct_sla_for_date(all_dates_sorted, current_tide_gauge_ids, number_of_principal_components,
                                  tide_gauge_stations, tide_gauge_to_lat_lon, eof_dataset, settings))
+
     # plot reconstruction error for cluster over time
     plotting.plot_reconstruction_error_over_time(mean_reconstruction_error_for_date, max_reconstruction_error_for_date,
                                                  min_reconstruction_error_for_date, cluster_id, settings.output_path,
                                                  number_of_testing_tide_gauges_for_date,
                                                  number_of_training_tide_gauges_for_date, sum(explained_variance_ratio))
-    return
+    return mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date
 
 
 def perform_pca_on_cluster(cluster_id: int, data_array_for_pca: np.array,
@@ -99,8 +103,8 @@ def perform_pca_on_cluster(cluster_id: int, data_array_for_pca: np.array,
     pcs = pca.fit_transform(data_array_for_pca)
     eofs = pca.components_
     explained_variance_ratio = pca.explained_variance_ratio_
-    logger.info(f"cluster_id: {cluster_id}")
-    logger.info(f"explained_variance_ratio: {sum(explained_variance_ratio)}")
+    # logger.info(f"cluster_id: {cluster_id}")
+    # logger.info(f"explained_variance_ratio: {sum(explained_variance_ratio)}")
     # create eof dataset and save to file
     eof_data_array = np.full((number_of_principal_components, len(sea_level_data["latitude"].values),
                               len(sea_level_data["longitude"].values)), np.nan)
@@ -175,10 +179,8 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime], current_tide_gaug
     max_reconstruction_error_for_date = {}
     number_of_training_tide_gauges_for_date = {}
     number_of_testing_tide_gauges_for_date = {}
-    for date in tqdm(all_dates_sorted):
+    for date in (all_dates_sorted):  # removed tqdm here to avoid issues with tqdm in multiprocessing
         valid_tide_gauges_for_current_date = []
-        testing_tide_gauges_for_current_date = []
-        training_tide_gauges_for_current_date = []
         # check if the tide gauges have valid data for this date
         for tide_gauge_id in current_tide_gauge_ids:
             current_tide_gauge_station = tide_gauge_stations[tide_gauge_id]
@@ -217,8 +219,9 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime], current_tide_gaug
             for i, tide_gauge_id in enumerate(training_tide_gauges_for_current_date):
                 lat, lon = tide_gauge_to_lat_lon[tide_gauge_id]
                 try:
-                    reduced_eofs[i, :] = eof_dataset.sel(latitude=lat, longitude=lon).eof.values[
-                                         :number_of_principal_components]
+                    reduced_eofs[i, :] = eof_dataset.eof.loc[
+                                             dict(latitude=lat, longitude=lon)
+                                         ][:number_of_principal_components].values
                 except KeyError:
                     logger.warning(
                         f"{lat}, {lon} not in eof dataset for date {date}, skipping tide gauge {tide_gauge_id}")
@@ -276,34 +279,161 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime], current_tide_gaug
             number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date)
 
 
+def reconstruct_cluster_wrapper(args):
+    return reconstruct_cluster(*args)
+
+
 def start_reconstruction(sea_level_data: xarray.Dataset,
                          cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float, float]]],
                          cluster_id_to_grid_point_id: dict[int, list[tuple[float, float]]],
                          tide_gauge_data: dict[int, TideGaugeStation], timeframe: tuple[int, int],
                          global_settings: GlobalSettings):
     """
-    Start the reconstruction
-    :param global_settings:
-    :param timeframe:
-    :param cluster_id_to_grid_point_id:
-    :param cluster_id_to_lat_lon_pairs:
+    Start the reconstruction process for all clusters.
     :param sea_level_data:
+    :param cluster_id_to_lat_lon_pairs:
+    :param cluster_id_to_grid_point_id:
     :param tide_gauge_data:
+    :param timeframe:
+    :param global_settings:
     :return:
     """
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     logger.info("Assigning tide gauge stations to clusters")
     tide_gauge_data_corrected, cluster_id_to_tide_gauge, tide_gauge_to_lat_lon = prepare_tide_gauges(
         cluster_id_to_lat_lon_pairs,
         global_settings, sea_level_data,
         tide_gauge_data)
-    # for each cluster, perform reconstruction
+
     logger.info("Starting reconstruction")
-    for cluster_id, lat_lon_pairs in cluster_id_to_lat_lon_pairs.items():
-        # select suitable tide gauge stations -> later
-        # perform PCA on the sea level data
-        reconstruct_cluster(cluster_id, lat_lon_pairs, sea_level_data, tide_gauge_data_corrected,
-                            cluster_id_to_tide_gauge, timeframe, cluster_id_to_grid_point_id[cluster_id],
-                            global_settings.output_path, tide_gauge_to_lat_lon,
-                            global_settings.number_of_principal_components, global_settings)
-        # fit the tide gauge data to the eof
-    return None
+
+    # Build task list
+    tasks = [
+        (
+            cluster_id,
+            cluster_id_to_lat_lon_pairs[cluster_id],
+            sea_level_data,
+            tide_gauge_data_corrected,
+            cluster_id_to_tide_gauge,
+            cluster_id_to_grid_point_id[cluster_id],
+            global_settings.output_path,
+            tide_gauge_to_lat_lon,
+            global_settings.number_of_principal_components,
+            global_settings
+        )
+        for cluster_id in cluster_id_to_lat_lon_pairs
+    ]
+
+    # Run in parallel
+    num_workers = min(multiprocessing.cpu_count(), 4)  # Tune this based on memory
+    results = []
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(reconstruct_cluster_wrapper, task)
+            for task in tasks
+        ]
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Reconstructing clusters"):
+            result = future.result()
+            results.append(result)
+
+    # Aggregate reconstruction errors
+    mean_reconstruction_error_for_date_all_clusters = {}
+    min_reconstruction_error_for_date_all_clusters = {}
+    max_reconstruction_error_for_date_all_clusters = {}
+    reconstructed_cluster_counter_for_date = {}
+
+    for result in results:
+        if result is None:
+            continue
+        mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date = (
+            result)
+        for date in mean_reconstruction_error_for_date:
+            if date not in mean_reconstruction_error_for_date_all_clusters:
+                mean_reconstruction_error_for_date_all_clusters[date] = 0
+                min_reconstruction_error_for_date_all_clusters[date] = float('inf')
+                max_reconstruction_error_for_date_all_clusters[date] = 0
+                reconstructed_cluster_counter_for_date[date] = 0
+            mean_reconstruction_error_for_date_all_clusters[date] += mean_reconstruction_error_for_date[date]
+            reconstructed_cluster_counter_for_date[date] += 1
+            if min_reconstruction_error_for_date[date] < min_reconstruction_error_for_date_all_clusters[date]:
+                min_reconstruction_error_for_date_all_clusters[date] = min_reconstruction_error_for_date[date]
+            if max_reconstruction_error_for_date[date] > max_reconstruction_error_for_date_all_clusters[date]:
+                max_reconstruction_error_for_date_all_clusters[date] = max_reconstruction_error_for_date[date]
+
+    for date in mean_reconstruction_error_for_date_all_clusters:
+        mean_reconstruction_error_for_date_all_clusters[date] /= reconstructed_cluster_counter_for_date[date]
+
+    profiler.disable()
+    # Print results sorted by time
+    stats = pstats.Stats(profiler).sort_stats("tottime")
+    stats.print_stats(30)  # print top 30 lines
+    return mean_reconstruction_error_for_date_all_clusters, min_reconstruction_error_for_date_all_clusters, \
+        max_reconstruction_error_for_date_all_clusters
+
+# def start_reconstruction(sea_level_data: xarray.Dataset,
+#                          cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float, float]]],
+#                          cluster_id_to_grid_point_id: dict[int, list[tuple[float, float]]],
+#                          tide_gauge_data: dict[int, TideGaugeStation], timeframe: tuple[int, int],
+#                          global_settings: GlobalSettings):
+#     """
+#     Start the reconstruction
+#     :param global_settings:
+#     :param timeframe:
+#     :param cluster_id_to_grid_point_id:
+#     :param cluster_id_to_lat_lon_pairs:
+#     :param sea_level_data:
+#     :param tide_gauge_data:
+#     :return:
+#     """
+#     profiler = cProfile.Profile()
+#     profiler.enable()
+#     logger.info("Assigning tide gauge stations to clusters")
+#     tide_gauge_data_corrected, cluster_id_to_tide_gauge, tide_gauge_to_lat_lon = prepare_tide_gauges(
+#         cluster_id_to_lat_lon_pairs,
+#         global_settings, sea_level_data,
+#         tide_gauge_data)
+#     # for each cluster, perform reconstruction
+#     logger.info("Starting reconstruction")
+#     mean_reconstruction_error_for_date_all_clusters = {}
+#     min_reconstruction_error_for_date_all_clusters = {}
+#     max_reconstruction_error_for_date_all_clusters = {}
+#     reconstructed_cluster_counter_for_date = {}
+#     for cluster_id, lat_lon_pairs in cluster_id_to_lat_lon_pairs.items():
+#         print(".")
+#         # perform PCA on the sea level data
+#         mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date = (
+#             reconstruct_cluster(
+#                 cluster_id, lat_lon_pairs, sea_level_data, tide_gauge_data_corrected,
+#                 cluster_id_to_tide_gauge, cluster_id_to_grid_point_id[cluster_id],
+#                 global_settings.output_path, tide_gauge_to_lat_lon,
+#                 global_settings.number_of_principal_components, global_settings))
+#         # aggregate the reconstruction error over all clusters
+#         for date in mean_reconstruction_error_for_date:
+#             if date not in mean_reconstruction_error_for_date_all_clusters:
+#                 mean_reconstruction_error_for_date_all_clusters[date] = 0
+#                 min_reconstruction_error_for_date_all_clusters[date] = float('inf')
+#                 max_reconstruction_error_for_date_all_clusters[date] = 0
+#                 reconstructed_cluster_counter_for_date[date] = 0
+#             mean_reconstruction_error_for_date_all_clusters[date] += mean_reconstruction_error_for_date[date]
+#             reconstructed_cluster_counter_for_date[date] += 1
+#             if min_reconstruction_error_for_date[date] < min_reconstruction_error_for_date_all_clusters[date]:
+#                 min_reconstruction_error_for_date_all_clusters[date] = min_reconstruction_error_for_date[date]
+#             if max_reconstruction_error_for_date[date] > max_reconstruction_error_for_date_all_clusters[date]:
+#                 max_reconstruction_error_for_date_all_clusters[date] = max_reconstruction_error_for_date[date]
+#     # average the reconstruction error over all clusters
+#     for date in mean_reconstruction_error_for_date_all_clusters:
+#         mean_reconstruction_error_for_date_all_clusters[date] /= reconstructed_cluster_counter_for_date[date]
+#
+#     profiler.disable()
+#
+#     # Print results sorted by time
+#     stats = pstats.Stats(profiler).sort_stats("tottime")
+#     stats.print_stats(30)  # print top 30 lines
+#
+#     # Optional: save to file for later use (e.g., with SnakeViz)
+#     stats.dump_stats("reconstruction_profile.pstats")
+#     return mean_reconstruction_error_for_date_all_clusters, min_reconstruction_error_for_date_all_clusters, \
+#         max_reconstruction_error_for_date_all_clusters

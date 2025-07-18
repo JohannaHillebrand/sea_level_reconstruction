@@ -334,7 +334,7 @@ def plot_reconstruction_error_over_time(mean_reconstruction_error_for_date: dict
 
         # Save the figure
         file_path = f"{out_dir}/reconstruction_error_cluster_{cluster_id}.png"
-        plt.savefig(file_path, dpi=300)
+        plt.savefig(file_path, dpi=600)
     return
 
 
@@ -380,25 +380,49 @@ def plot_time_series(first_component: np.array, out_dir: str, name: str, sea_lev
     """
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
+    # time_steps = sea_level_anomaly_data['time'].values
+    # date_times = pd.to_datetime(time_steps)
+    #
+    # fig, ax = plt.subplots(figsize=(15, 6))
+    # ax.plot(date_times, first_component)
+    #
+    # # Set the locator to show a tick for every year
+    # ax.xaxis.set_major_locator(mdates.YearLocator())
+    # # Set the formatter to show the full date
+    # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    #
+    # ax.set_xlabel('Time')
+    # ax.set_ylabel('Sea level in meters')
+    # ax.set_title(f"{name}")
+    #
+    # # Rotate and align the tick labels so they don't overlap
+    # fig.autofmt_xdate()
+    #
+    # plt.savefig(os.path.join(out_dir, f'{name}.png'))
+    # plt.close(fig)
+
     time_steps = sea_level_anomaly_data['time'].values
     date_times = pd.to_datetime(time_steps)
 
-    fig, ax = plt.subplots(figsize=(15, 6))
-    ax.plot(date_times, first_component)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    # Plot the time series
+    ax.plot(date_times, first_component, color='navy', linewidth=1.5)
 
     # Set the locator to show a tick for every year
     ax.xaxis.set_major_locator(mdates.YearLocator())
     # Set the formatter to show the full date
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax.tick_params(axis='x', labelrotation=45)
 
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Sea level in meters')
-    ax.set_title(f"{name}")
+    # Labels and title
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Sea Level Anomaly (m)', fontsize=12)
 
-    # Rotate and align the tick labels so they don't overlap
-    fig.autofmt_xdate()
+    ax.grid(True, which='major', linestyle='--', alpha=0.6)
+    fig.tight_layout()
 
-    plt.savefig(os.path.join(out_dir, f'{name}.png'))
+    output_path = os.path.join(out_dir, f'{name}.jpg')
+    plt.savefig(output_path, dpi=600, bbox_inches='tight')
     plt.close(fig)
     return None
 
@@ -414,15 +438,81 @@ def plot_eof(eof_to_plot: np.array, output_dir: str, name: str):
     # Define coordinate extent (longitude/latitude or other units)
     extent = [-180, 180, -90, 90]  # [xmin, xmax, ymin, ymax]
 
+    # # Create the custom colormap
+    # custom_cmap = mcolors.LinearSegmentedColormap.from_list(
+    #     "smooth_split_blue",
+    #     [
+    #         (0.0, "#2ca25f"),  # green
+    #         (0.40, "#2ca25f"),  # mostly green
+    #         (0.48, "#0570b0"),  # start blue fade
+    #         (0.50, "#0570b0"),  # pure blue at center
+    #         (0.52, "#0570b0"),  # end blue fade
+    #         (0.60, "#de2d26"),  # mostly red
+    #         (1.0, "#de2d26")  # full red
+    #     ]
+    # )
     # Plot using a projection (PlateCarree = regular lat/lon grid)
-    fig, ax = plt.subplots(subplot_kw={'projection': ccrs.PlateCarree()})
-    im = ax.imshow(eof_to_plot, extent=extent, origin='lower', cmap='viridis')
+    # Define figure size suitable for 300–1200 DPI
+    fig, ax = plt.subplots(figsize=(12, 6), subplot_kw={'projection': ccrs.PlateCarree()})
 
-    # Add geographic features
-    ax.coastlines(resolution='110m', linewidth=0.5)
+    # Plot the data
+    im = ax.imshow(eof_to_plot, extent=extent, origin='lower', cmap='seismic', interpolation='none')
+
+    # Add geographic features with highest resolution
+    ax.coastlines(resolution='10m', linewidth=0.8)
     ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-    ax.add_feature(cfeature.LAND, facecolor='lightgray')
-    plt.colorbar(im, label='Sea Level (m)')
-    plt.title(f"{name}")
-    plt.savefig(os.path.join(output_dir, f'{name}.pdf'), dpi=1000)
+    ax.add_feature(cfeature.LAND, facecolor='burlywood', zorder=0, alpha=0.5)
+    # Colorbar with improved layout and font
+    cbar = plt.colorbar(im, ax=ax, orientation='vertical', pad=0.02, shrink=0.85)
+    cbar.set_label('Sea Level (m)', fontsize=12)
+
+    # Improve layout and save at high DPI
+    output_path = os.path.join(output_dir, f'{name}.jpg')
+    plt.savefig(output_path, dpi=600, bbox_inches='tight')
     plt.close()
+
+
+def plot_reconstruction_comparison(mean_sc, min_sc, max_sc, mean_km, min_km, max_km, output_path, timeframe):
+    """
+    Plot the reconstruction comparison for different clustering methods
+    :param mean_sc:
+    :param min_sc:
+    :param max_sc:
+    :param mean_km:
+    :param min_km:
+    :param max_km:
+    :param output_path:
+    :param timeframe:
+    :return:
+    """
+    mean_sc = dict(sorted(mean_sc.items()))
+    min_sc = dict(sorted(min_sc.items()))
+    max_sc = dict(sorted(max_sc.items()))
+    mean_km = dict(sorted(mean_km.items()))
+    min_km = dict(sorted(min_km.items()))
+    max_km = dict(sorted(max_km.items()))
+
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    fig, ax = plt.subplots(figsize=(20, 10))
+    # Plot the mean reconstruction for both methods
+    ax.plot(mean_sc.keys(), mean_sc.values(), label="Mean Reconstruction Error Subspace Clustering", color="blue",
+            linewidth=2)
+    ax.fill_between(mean_sc.keys(), min_sc.values(), max_sc.values(), color='lightblue', alpha=0.5,
+                    label="Min/Max Reconstruction Error Subspace Clustering")
+    ax.plot(mean_km.keys(), mean_km.values(), label="Mean Reconstruction Error K-Means", color="green", linewidth=2)
+    ax.fill_between(mean_km.keys(), min_km.values(), max_km.values(), color='lightgreen', alpha=0.5,
+                    label="Min/Max Reconstruction Error Range K-Means")
+    ax.set_xlabel("Date", fontsize=14)
+    ax.set_ylabel("Reconstruction Error", fontsize=14)
+    # save the plot
+    ax.set_title(f"Reconstruction Comparison for {timeframe}", fontsize=16)
+    ax.legend(fontsize=12)
+    ax.set_ylim(bottom=-1, top=20)
+
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, f"reconstruction_comparison_k_means_subspace_clustering.jpg"), dpi=600)
+    plt.close()
+
+    return None
