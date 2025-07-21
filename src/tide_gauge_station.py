@@ -12,6 +12,8 @@ class TideGaugeStation:
     longitude: float
     timeseries: dict
     timeseries_corrected_reference_datum: dict
+    closest_grid_point: tuple[int, int] = None
+    closest_lat_lon: tuple[float, float] = None
 
     def correct_reference_datum(self, time_series_of_closest_grid_point, time):
         """
@@ -46,7 +48,7 @@ class TideGaugeStation:
         self.timeseries_corrected_reference_datum = tide_gauge_timeseries_corrected_reference_datum
 
 
-def read_and_create_stations(path: str) -> dict[int:TideGaugeStation]:
+def read_and_create_stations(path: str, cutoff_date: int) -> dict[int:TideGaugeStation]:
     """
     Read filelist.txt and create a station object with the corresponding time series for each station in the file.
     :param path:
@@ -86,6 +88,8 @@ def read_and_create_stations(path: str) -> dict[int:TideGaugeStation]:
                             sea_level /= 1000
                             valid_values += 1
                         real_date = year_fraction_to_date(date)
+                        if real_date.year < cutoff_date:
+                            continue
                         station_timeseries[real_date] = sea_level
                 current_stations[station_id] = TideGaugeStation(id=station_id, name=station_name,
                                                                 latitude=station_latitude,

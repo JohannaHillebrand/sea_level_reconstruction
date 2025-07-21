@@ -45,7 +45,6 @@ def assign_tide_gauge_stations_to_cluster(cluster_id_to_lat_lon_pairs: dict[int,
         for tide_gauge_id, tide_gauge_station in tide_gauge_data.items():
             closest_cluster_id, closest_lat_lon = find_closest_cluster_for_tide_gauge(tide_gauge_station,
                                                                                       cluster_id_to_lat_lon_pairs)
-
             try:
                 cluster_id_to_tide_gauge[closest_cluster_id].append(tide_gauge_id)
             except KeyError:
@@ -120,6 +119,21 @@ def filter_tide_gauge_stations(tide_gauge_data: dict[int, TideGaugeStation], tim
     return tide_gauge_data
 
 
+def lat_lon_to_grid_point_id(lat, lon, min_lat, min_lon, resolution):
+    """
+    Convert latitude and longitude to grid point id
+    :param lat:
+    :param lon:
+    :param min_lat:
+    :param min_lon:
+    :param resolution:
+    :return:
+    """
+    id_x = int((lat - min_lat) / resolution)
+    id_y = int((lon - min_lon) / resolution)
+    return id_x, id_y
+
+
 def correct_reference_datum_for_all_tide_gauges(tide_gauge_data, sea_level_data, tide_gauge_to_lat_lon, data_path: str):
     """
     Correct the reference datum of the tide gauges by fitting it to the satellite sea level data
@@ -135,6 +149,13 @@ def correct_reference_datum_for_all_tide_gauges(tide_gauge_data, sea_level_data,
             time_series_of_closest_grid_point = sea_level_data.sel(latitude=lat, longitude=lon, method="nearest")["sla"]
             tide_gauge_station.correct_reference_datum(time_series_of_closest_grid_point.values,
                                                        time_series_of_closest_grid_point.time.values)
+            # add the closest lat/lon and grid point to the tide gauge station
+            tide_gauge_station.closest_lat_lon = (lat, lon)
+            tide_gauge_station.closest_grid_point = lat_lon_to_grid_point_id(lat, lon,
+                                                                             sea_level_data["latitude"].min(),
+                                                                             sea_level_data["longitude"].min(),
+                                                                             sea_level_data["latitude"].values[1] -
+                                                                             sea_level_data["latitude"].values[0])
         # save to file
         with open(f"{data_path}/tide_gauge_data_corrected_reference_datum.pkl", "wb") as f:
             pickle.dump(tide_gauge_data, f)
@@ -171,6 +192,7 @@ def prepare_tide_gauges(cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float,
                                               sea_level_data["latitude"].values[1] -
                                               sea_level_data["latitude"].values[
                                                   0], cluster_id_to_tide_gauge, tide_gauge_data_filtered)
+    logger.info("Correcting reference datum for tide gauges")
     # correct the reference datum of the tide gauge data
     tide_gauge_data_corrected = correct_reference_datum_for_all_tide_gauges(tide_gauge_data_filtered, sea_level_data,
                                                                             tide_gauge_to_lat_lon,

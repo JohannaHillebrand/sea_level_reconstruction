@@ -12,9 +12,10 @@ class GlobalSettings(BaseSettings):
     tide_gauge_data_folder: str = "../data/rlr_monthly"
     output_path: str = "../output/08_clusters"
     # output_path: str = "../output/k-means"
+    cut_off_year_beginning: int = 1950
     timeframe: tuple[int, int] = (1993, 2024)
     number_of_principal_components: int = 10
-    reconstruction_iterations: int = 50
+    reconstruction_iterations: int = 1
     percentage_of_data_used_for_reconstruction: float = 0.9
     baseline_number_of_tide_gauges_for_testing: int = 2
     reconstruction: bool = True

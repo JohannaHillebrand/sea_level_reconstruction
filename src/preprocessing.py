@@ -83,7 +83,8 @@ def read_data(global_settings: GlobalSettings) -> tuple[
     # save the clustering data via pickle
     logger.info(f"Number of clusters: {len(cluster_id_to_lat_lon_pairs.keys())}")
     logger.info(f"Reading tide gauge data")
-    tide_gauge_data = read_and_create_stations(global_settings.tide_gauge_data_folder)
+    tide_gauge_data = read_and_create_stations(global_settings.tide_gauge_data_folder,
+                                               global_settings.cut_off_year_beginning)
 
     return sea_level_data, cluster_id_to_lat_lon_pairs, cluster_id_to_grid_point_id, tide_gauge_data
 
