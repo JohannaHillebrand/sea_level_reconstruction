@@ -8,6 +8,7 @@ import numpy as np
 import xarray
 from joblib import delayed, Parallel
 from loguru import logger
+from loky import set_loky_pickler
 from sklearn.decomposition import PCA
 
 from src import plotting, helper
@@ -16,45 +17,39 @@ from src.settings.settings import GlobalSettings
 from src.tide_gauge_station import TideGaugeStation
 
 
-def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]], sea_level_data: xarray.Dataset,
+def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]], sea_level_data_array: np.ndarray,
                         tide_gauge_stations_for_cluster: dict[int, TideGaugeStation],
-                        grid_points: list[tuple[float, float]],
+                        grid_points: list[tuple[int, int]],
                         output_path: str,
-                        tide_gauge_to_lat_lon: dict[int, tuple[float, float]], number_of_principal_components: int,
-                        settings: GlobalSettings):
+                        tide_gauge_to_lat_lon: dict[int, tuple[float, float]],
+                        settings: GlobalSettings, min_lat, min_lon, resolution):
     """
     Reconstruct a cluster
+    :param resolution:
+    :param min_lon:
+    :param min_lat:
+    :param sea_level_data_array:
     :param tide_gauge_stations_for_cluster:
     :param settings:
-    :param number_of_principal_components:
     :param tide_gauge_to_lat_lon:
     :param output_path:
     :param grid_points:
     :param cluster_id:
     :param lat_lon_pairs:
-    :param sea_level_data:
-    :param tide_gauge_stations:
-    :param cluster_id_to_tide_gauge:
     :return:
     """
     # create data array for pca
     data_array_for_pca, index_to_grid_point_id = create_data_array_for_pca(cluster_id, grid_points, lat_lon_pairs,
-                                                                           sea_level_data)
+                                                                           sea_level_data_array, min_lat, min_lon,
+                                                                           resolution)
 
     eof_data_array, eofs, explained_variance_ratio, pcs = perform_pca_on_cluster(data_array_for_pca,
                                                                                  index_to_grid_point_id,
-                                                                                 number_of_principal_components,
-                                                                                 sea_level_data)
-    # logger.info("plotting eofs")
-    # for i in range(number_of_principal_components):
-    #     data = eof_dataset.eof.isel(components=i)
-    #     fig = plt.figure(figsize=(15, 10))
-    #     ax = plt.axes(projection=ccrs.PlateCarree())
-    #     data.plot(ax=ax, transform=ccrs.PlateCarree(), cmap="jet", add_colorbar=True)
-    #     ax.coastlines()
-    #     ax.gridlines(draw_labels=True)
-    #     plt.savefig(f"{output_path}/cluster_{cluster_id}_eof_{i}.pdf", dpi=500)
-    #     plt.close(fig)
+                                                                                 settings.number_of_principal_components,
+                                                                                 sea_level_data_array)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as temp_file:
+        np.save(temp_file.name, eof_data_array)
+        eof_data_array_path = temp_file.name
 
     # save to file
     with open(f"{output_path}/cluster_{cluster_id}_explained_variance_ratio.txt", "wb") as f:
@@ -68,16 +63,17 @@ def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]
     all_dates = set()
     for tide_gauge_id in tide_gauge_stations_for_cluster.keys():
         for date in tide_gauge_stations_for_cluster[tide_gauge_id].timeseries.keys():
+            if date.year < settings.cut_off_year_beginning:
+                continue
             all_dates.add(date)
     all_dates_sorted = sorted(list(all_dates))
-    min_lat = sea_level_data.latitude.min().item()
-    min_lon = sea_level_data.longitude.min().item()
-    resolution = (sea_level_data.latitude[1].item() - sea_level_data.latitude[0].item())
+    # print(all_dates_sorted)
+    # exit()
     # reconstruct the sea level data for each date using the tide gauges
     (mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date,
      number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date) = (
         reconstruct_sla_for_date(all_dates_sorted, tide_gauge_stations_for_cluster, tide_gauge_to_lat_lon, settings,
-                                 eof_data_array, min_lat, min_lon, resolution))
+                                 eof_data_array_path, min_lat, min_lon, resolution))
 
     # plot reconstruction error for cluster over time
     plotting.plot_reconstruction_error_over_time(mean_reconstruction_error_for_date, max_reconstruction_error_for_date,
@@ -89,15 +85,16 @@ def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]
 
 def perform_pca_on_cluster(data_array_for_pca: np.array,
                            index_to_grid_point_id: dict[int, tuple[float, float]], number_of_principal_components: int,
-                           sea_level_data: xarray.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                           sea_level_data_array: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Perform PCA on the data array for the given cluster
+    :param sea_level_data_array:
     :param data_array_for_pca:
     :param index_to_grid_point_id:
     :param number_of_principal_components:
-    :param sea_level_data:
     :return:
     """
+    time, indices_x, indices_y = sea_level_data_array.shape
     pca = PCA(n_components=number_of_principal_components)
     pcs = pca.fit_transform(data_array_for_pca)
     eofs = pca.components_
@@ -105,63 +102,58 @@ def perform_pca_on_cluster(data_array_for_pca: np.array,
     # logger.info(f"cluster_id: {cluster_id}")
     # logger.info(f"explained_variance_ratio: {sum(explained_variance_ratio)}")
     # create eof dataset and save to file
-    eof_data_array = np.full((number_of_principal_components, len(sea_level_data["latitude"].values),
-                              len(sea_level_data["longitude"].values)), np.nan)
+    eof_data_array = np.full((number_of_principal_components, indices_x, indices_y), np.nan)
+
     for i in range(number_of_principal_components):
         for j in index_to_grid_point_id.keys():
             eof_data_array[i, index_to_grid_point_id[j][0], index_to_grid_point_id[j][1]] = eofs[i, j]
-    # eof_dataset = xarray.Dataset(
-    #     data_vars={
-    #         "eof": (("components", "latitude", "longitude"), eof_data_array)
-    #     },
-    #     coords={
-    #         "latitude": sea_level_data["latitude"].values,
-    #         "longitude": sea_level_data["longitude"].values,
-    #         "components": range(number_of_principal_components)})
+
     return eof_data_array, eofs, explained_variance_ratio, pcs
 
 
-def create_data_array_for_pca(cluster_id, grid_points, lat_lon_pairs, sea_level_data):
+def create_data_array_for_pca(cluster_id: int, grid_points: list[tuple[int, int]],
+                              lat_lon_pairs: list[tuple[float, float]],
+                              sla_data_array: np.ndarray, min_lat, min_lon, resolution) -> tuple[
+    np.ndarray, dict[int, tuple[int, int]]]:
     """
     Create a data array for PCA from the sea level data
     The data array has the shape (time, number of grid points)
+    :param resolution:
+    :param min_lon:
+    :param min_lat:
+    :param sla_data_array:
     :param cluster_id:
     :param grid_points:
     :param lat_lon_pairs:
-    :param sea_level_data:
     :return:
     """
-    data_array_for_pca = np.zeros((len(sea_level_data["time"].values), len(lat_lon_pairs)))  # shape time, grid points
+    time, indices_x, indices_y = sla_data_array.shape
+    data_array_for_pca = np.zeros((time, len(lat_lon_pairs)))  # shape time, grid points
     # weight each grid point by the cosine of the latitude
-    sla_data_array = sea_level_data['sla'].values  # shape time, lat, lon
     index_to_grid_point_id = {}
     nan_counter = 0
     for counter, (idx, idy) in enumerate(grid_points):
-        lat, lon = helper.index_to_lat_lon(idx, idy, sea_level_data.latitude[0].item(),
-                                           sea_level_data.longitude[0].item(),
-                                           sea_level_data.latitude[1].item() - sea_level_data.latitude[0].item())
+        lat, lon = helper.index_to_lat_lon(idx, idy, min_lat, min_lon, resolution)
         weight = np.cos(np.deg2rad(lat))  # weight by the cosine of the latitude
         time_series = sla_data_array[:, idx, idy] * weight
         if np.isnan(time_series).any():
             nan_counter += 1
             continue
         data_array_for_pca[:, counter] = time_series
-
         index_to_grid_point_id[counter] = (idx, idy)
-    if np.isnan(data_array_for_pca[:, counter]).any():
-        exit(1)
+    
+    if np.isnan(data_array_for_pca).any():
         logger.warning(f"NaN in data array for cluster {cluster_id}: {counter}")
         logger.warning("Removing column with NaN values from data array for PCA, but this should be handled before")
-        # remove the column from the data array
-        data_array_for_pca = np.delete(data_array_for_pca, np.where(np.isnan(data_array_for_pca).any(axis=0)),
-                                       axis=1)
+        exit(1)
+
     return data_array_for_pca, index_to_grid_point_id
 
 
 def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
                              current_tide_gauge_stations: dict[int, TideGaugeStation],
                              tide_gauge_to_lat_lon: dict[int, tuple[float, float]],
-                             settings: GlobalSettings, eof_data_array: np.ndarray, min_lat: float, min_lon: float,
+                             settings: GlobalSettings, eof_data_array_path: str, min_lat: float, min_lon: float,
                              resolution: float):
     """
     Reconstruct the sea level anomaly for each date using the tide gauges
@@ -175,12 +167,11 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
     :param tide_gauge_to_lat_lon:
     :return:
     """
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as temp_file:
-        np.save(temp_file.name, eof_data_array)
-        eof_data_array_path = temp_file.name
+
     tasks = [[date, current_tide_gauge_stations, settings, tide_gauge_to_lat_lon, eof_data_array_path, min_lat, min_lon,
               resolution] for date in
              all_dates_sorted]
+    set_loky_pickler('pickle')
     results = Parallel(n_jobs=-2, verbose=1)(delayed(process_date)(*task) for task in tasks)
 
     min_reconstruction_error_for_date = {}
@@ -188,16 +179,19 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
     max_reconstruction_error_for_date = {}
     number_of_training_tide_gauges_for_date = {}
     number_of_testing_tide_gauges_for_date = {}
-    for (date, mean_reconstruction_error_for_date, max_reconstruction_error_for_date, min_reconstruction_error_for_date,
-         number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date) in results:
-        if mean_reconstruction_error_for_date is None:
+    counter = 0
+    for (date, mean_, max_, min_, no_testing_tide_gauges, no_training_tide_gauges) in results:
+        # print(f"{date}, {mean_}, {max_}, {min_}, {no_testing_tide_gauges}, {no_training_tide_gauges}")
+        if date is None:
+            counter = +1
             continue
-        mean_reconstruction_error_for_date[date] = mean_reconstruction_error_for_date
-        min_reconstruction_error_for_date[date] = min_reconstruction_error_for_date
-        max_reconstruction_error_for_date[date] = max_reconstruction_error_for_date
-        number_of_testing_tide_gauges_for_date[date] = number_of_testing_tide_gauges_for_date
-        number_of_training_tide_gauges_for_date[date] = number_of_training_tide_gauges_for_date
-
+        mean_reconstruction_error_for_date[date] = mean_
+        min_reconstruction_error_for_date[date] = min_
+        max_reconstruction_error_for_date[date] = max_
+        number_of_testing_tide_gauges_for_date[date] = no_testing_tide_gauges
+        number_of_training_tide_gauges_for_date[date] = no_training_tide_gauges
+    if counter > 0:
+        logger.warning(f"Reconstruction did not work for {counter} dates")
     return (mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date,
             number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date)
 
@@ -224,7 +218,7 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
         number_of_tide_gauges_for_training = len(
             valid_tide_gauges_for_current_date) - settings.baseline_number_of_tide_gauges_for_testing
     if number_of_tide_gauges_for_training < settings.number_of_principal_components:
-        return None, None, None, None, None
+        return date, None, None, None, None, None
     min_reconstruction_error_for_date = float('inf')
     max_reconstruction_error_for_date = 0
     mean_reconstruction_error_for_date = 0
@@ -236,15 +230,19 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
                                                               number_of_tide_gauges_for_training)
         testing_tide_gauges_for_current_date = [tide_gauge for tide_gauge in valid_tide_gauges_for_current_date if
                                                 tide_gauge not in training_tide_gauges_for_current_date]
-        tide_gauge_value_for_reconstruction = np.array(np.zeros((len(training_tide_gauges_for_current_date), 1)))
+        tide_gauge_value_for_reconstruction = np.empty(
+            (len(training_tide_gauges_for_current_date), 1))  # or just .reshape(-1, 1) later
+
         for i, station_id in enumerate(training_tide_gauges_for_current_date):
             current_tide_gauge_station = current_tide_gauge_stations[station_id]
             value = current_tide_gauge_station.timeseries_corrected_reference_datum[date]
             tide_gauge_value_for_reconstruction[i] = value
 
         # get the principal components for the training data
-        reduced_eofs = np.array(
-            np.zeros((len(tide_gauge_value_for_reconstruction), settings.number_of_principal_components)))
+        # reduced_eofs = np.array(
+        #     np.zeros((len(tide_gauge_value_for_reconstruction), settings.number_of_principal_components)))
+        reduced_eofs = np.zeros((len(tide_gauge_value_for_reconstruction), settings.number_of_principal_components))
+
         for i, tide_gauge_id in enumerate(training_tide_gauges_for_current_date):
             current_tide_gauge_station = current_tide_gauge_stations[tide_gauge_id]
             lat, lon = tide_gauge_to_lat_lon[tide_gauge_id]
@@ -275,13 +273,16 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
                                                                          rcond=None)
         estimated_pc_for_date = coefficients
         # reconstruct sea level for current date
-        _, lat_size, lon_size = eof_data_array.shape
-        reconstructed_data_array = np.zeros((lat_size, lon_size))  # shape (latitude, longitude)
-        for i in range(settings.number_of_principal_components):
-            current_eof = np.array(eof_data_array[i, :, :])  # shape (latitude, longitude)
-            current_alpha = coefficients[i]
-            current_h_r = current_eof * current_alpha
-            reconstructed_data_array = np.sum([reconstructed_data_array, current_h_r], axis=0)
+        # _, lat_size, lon_size = eof_data_array.shape
+        # reconstructed_data_array = np.zeros((lat_size, lon_size))  # shape (latitude, longitude)
+        # for i in range(settings.number_of_principal_components):
+        #     current_eof = np.array(eof_data_array[i, :, :])  # shape (latitude, longitude)
+        #     current_alpha = coefficients[i]
+        #     current_h_r = current_eof * current_alpha
+        #     reconstructed_data_array = np.sum([reconstructed_data_array, current_h_r], axis=0)
+
+        reconstructed_data_array = np.tensordot(coefficients.flatten(),
+                                                eof_data_array[:settings.number_of_principal_components], axes=(0, 0))
 
         # for each testing tide gauge, take the value for the current date and check how close the value is to the
         # reconstructed sla at the closest lat-lon-point
@@ -319,15 +320,13 @@ def reconstruct_cluster_wrapper(args):
 def start_reconstruction(sea_level_data: xarray.Dataset,
                          cluster_id_to_lat_lon_pairs: dict[int, list[tuple[float, float]]],
                          cluster_id_to_grid_point_id: dict[int, list[tuple[float, float]]],
-                         tide_gauge_data: dict[int, TideGaugeStation], timeframe: tuple[int, int],
-                         global_settings: GlobalSettings):
+                         tide_gauge_data: dict[int, TideGaugeStation], global_settings: GlobalSettings):
     """
     Start the reconstruction process for all clusters.
     :param sea_level_data:
     :param cluster_id_to_lat_lon_pairs:
     :param cluster_id_to_grid_point_id:
     :param tide_gauge_data:
-    :param timeframe:
     :param global_settings:
     :return:
     """
@@ -343,21 +342,31 @@ def start_reconstruction(sea_level_data: xarray.Dataset,
     logger.info("Starting reconstruction")
 
     # Build task list
-    tasks = [
-        (
-            cluster_id,
-            cluster_id_to_lat_lon_pairs[cluster_id],
-            sea_level_data,
-            {tide_gauge_id: tide_gauge_data_corrected[tide_gauge_id] for tide_gauge_id in
-             cluster_id_to_tide_gauge[cluster_id]},
-            cluster_id_to_grid_point_id[cluster_id],
-            global_settings.output_path,
-            tide_gauge_to_lat_lon,
-            global_settings.number_of_principal_components,
-            global_settings
-        )
-        for cluster_id in cluster_id_to_lat_lon_pairs
-    ]
+    sea_level_data_array = sea_level_data.sla.values
+    min_lat = sea_level_data.latitude.min().item()
+    min_lon = sea_level_data.longitude.min().item()
+    resolution = sea_level_data.latitude.values[1] - sea_level_data.latitude.values[0]
+    print(type(resolution))
+    tasks = []
+    for cluster_id in cluster_id_to_tide_gauge:
+        if len(cluster_id_to_tide_gauge[
+                   cluster_id]) > global_settings.lower_bound_for_number_of_tide_gauges_per_cluster:
+            tasks.append((
+                cluster_id,
+                cluster_id_to_lat_lon_pairs[cluster_id],
+                sea_level_data_array,
+                {tide_gauge_id: tide_gauge_data_corrected[tide_gauge_id] for tide_gauge_id in
+                 cluster_id_to_tide_gauge[cluster_id]},
+                cluster_id_to_grid_point_id[cluster_id],
+                global_settings.output_path,
+                tide_gauge_to_lat_lon,
+                global_settings,
+                min_lat, min_lon, resolution
+            ))
+        else:
+            logger.info(
+                f"Skipping cluster {cluster_id}, only {len(cluster_id_to_tide_gauge[cluster_id])} tide gauges")
+        print(f"number of tide gauges for {cluster_id}: {len(cluster_id_to_tide_gauge[cluster_id])}")
 
     results = []
     for task in tasks:

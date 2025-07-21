@@ -25,6 +25,7 @@ geopandas = ">=1.1.1,<2.0.0"
 joblib = ">=1.5.1,<2.0.0"
 scikit-learn = ">=1.7.0,<2.0.0"
 tqdm = "^4.67.1"
+loky = "^3.5.5"
 
 
 [build-system]

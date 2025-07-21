@@ -11,6 +11,8 @@
 import os
 import pickle
 
+from loguru import logger
+
 from src import reconstruction_per_cluster, compute_global_mean_sea_level, calculate_eofs_for_entire_dataset, plotting
 from src.preprocessing import read_data
 from src.settings.settings import GlobalSettings
@@ -32,10 +34,11 @@ def main():
     if global_settings.reconstruction:
         if not os.path.exists("../output/comparison/mean_sc.pkl") or not os.path.exists(
                 "../output/comparison/min_sc.pkl") or not os.path.exists("../output/comparison/max_sc.pkl"):
+            logger.info(f"{global_settings.output_path}")
             mean_sc, min_sc, max_sc = (
                 reconstruction_per_cluster.start_reconstruction(sea_level_data, cluster_id_to_lat_lon_pairs,
                                                                 cluster_id_to_grid_point_id, tide_gauge_data,
-                                                                global_settings.timeframe, global_settings))
+                                                                global_settings))
 
             # save to file
             if not os.path.exists("../output/comparison"):
@@ -54,34 +57,34 @@ def main():
             with open(f"../output/comparison/max_sc.pkl", "rb") as infile:
                 max_sc = pickle.load(infile)
 
-        if not os.path.exists("../output/comparison/mean_km.pkl") or not os.path.exists(
-                "../output/comparison/min_km.pkl") or not os.path.exists("../output/comparison/max_km.pkl"):
-            global_settings.output_path = "../output/k-means"
-            global_settings.clustering_data_path = "../data/clustering/k-means"
+        if not os.path.exists("../output/comparison/mean_w.pkl") or not os.path.exists(
+                "../output/comparison/min_w.pkl") or not os.path.exists("../output/comparison/max_w.pkl"):
+            global_settings.output_path = "../output/wards"
+            global_settings.clustering_data_path = "../data/clustering/wards"
             sea_level_data, cluster_id_to_lat_lon_pairs, cluster_id_to_grid_point_id, tide_gauge_data = read_data(
                 global_settings)
-            mean_km, min_km, max_km = (
+            mean_w, min_w, max_w = (
                 reconstruction_per_cluster.start_reconstruction(sea_level_data, cluster_id_to_lat_lon_pairs,
                                                                 cluster_id_to_grid_point_id, tide_gauge_data,
-                                                                global_settings.timeframe, global_settings))
+                                                                global_settings))
             # save to file
-            with open(f"../output/comparison/mean_km.pkl", "wb") as outfile:
-                pickle.dump(mean_km, outfile)
-            with open(f"../output/comparison/min_km.pkl", "wb") as outfile:
-                pickle.dump(min_km, outfile)
-            with open(f"../output/comparison/max_km.pkl", "wb") as outfile:
-                pickle.dump(max_km, outfile)
+            with open(f"../output/comparison/mean_w.pkl", "wb") as outfile:
+                pickle.dump(mean_w, outfile)
+            with open(f"../output/comparison/min_w.pkl", "wb") as outfile:
+                pickle.dump(min_w, outfile)
+            with open(f"../output/comparison/max_w.pkl", "wb") as outfile:
+                pickle.dump(max_w, outfile)
         else:
-            with open(f"../output/comparison/mean_km.pkl", "rb") as infile:
-                mean_km = pickle.load(infile)
-            with open(f"../output/comparison/min_km.pkl", "rb") as infile:
-                min_km = pickle.load(infile)
-            with open(f"../output/comparison/max_km.pkl", "rb") as infile:
-                max_km = pickle.load(infile)
+            with open(f"../output/comparison/mean_w.pkl", "rb") as infile:
+                mean_w = pickle.load(infile)
+            with open(f"../output/comparison/min_w.pkl", "rb") as infile:
+                min_w = pickle.load(infile)
+            with open(f"../output/comparison/max_w.pkl", "rb") as infile:
+                max_w = pickle.load(infile)
 
         # compare the two reconstructions
         global_settings.output_path = "../output/comparison"
-        plotting.plot_reconstruction_comparison(mean_sc, min_sc, max_sc, mean_km, min_km, max_km,
+        plotting.plot_reconstruction_comparison(mean_sc, min_sc, max_sc, mean_w, min_w, max_w,
                                                 global_settings.output_path, global_settings.timeframe)
 
     # calculate global mean sea level, by calculating the mean of the tide gauges in a given cluster, then weight the

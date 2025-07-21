@@ -292,6 +292,25 @@ def plot_reconstruction_error_over_time(mean_reconstruction_error_for_date: dict
     """
     if (mean_reconstruction_error_for_date is not None and max_reconstruction_error_for_date is not None and
             min_reconstruction_error_for_date is not None):
+        print(mean_reconstruction_error_for_date)
+        print(max_reconstruction_error_for_date)
+        print(min_reconstruction_error_for_date)
+        dates_to_remove = []
+        for date in mean_reconstruction_error_for_date.keys():
+            mean_ = mean_reconstruction_error_for_date.get(date, None)
+            max_ = max_reconstruction_error_for_date.get(date, None)
+            min_ = min_reconstruction_error_for_date.get(date, None)
+            if mean_ is None or max_ is None or min_ is None:
+                dates_to_remove.append(date)
+                continue
+        for date in dates_to_remove:
+            del mean_reconstruction_error_for_date[date]
+            del max_reconstruction_error_for_date[date]
+            del min_reconstruction_error_for_date[date]
+            if date in number_of_testing_tide_gauges_for_date:
+                del number_of_testing_tide_gauges_for_date[date]
+            if date in number_of_training_tide_gauges_for_date:
+                del number_of_training_tide_gauges_for_date[date]
         fig, ax1 = plt.subplots(figsize=(20, 10))  # Create figure and primary axes (ax1)
 
         # --- Plotting on the Left Y-axis (Reconstruction Error) ---
