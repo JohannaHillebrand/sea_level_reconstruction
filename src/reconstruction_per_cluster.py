@@ -1,10 +1,12 @@
 import cProfile
 import pstats
 import random
+import tempfile
 from datetime import datetime
 
 import numpy as np
 import xarray
+from joblib import delayed, Parallel
 from loguru import logger
 from sklearn.decomposition import PCA
 
@@ -169,112 +171,129 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
     :param tide_gauge_to_lat_lon:
     :return:
     """
-    number_of_principal_components = settings.number_of_principal_components
-    estimated_pc_for_date = {}
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as temp_file:
+        np.save(temp_file.name, eof_data_array)
+        eof_data_array_path = temp_file.name
+    tasks = [[date, current_tide_gauge_stations, settings, tide_gauge_to_lat_lon, eof_data_array_path] for date in
+             all_dates_sorted]
+    results = Parallel(n_jobs=-2, verbose=1)(delayed(process_date)(*task) for task in tasks)
+
     min_reconstruction_error_for_date = {}
     mean_reconstruction_error_for_date = {}
     max_reconstruction_error_for_date = {}
     number_of_training_tide_gauges_for_date = {}
     number_of_testing_tide_gauges_for_date = {}
-    for date in (all_dates_sorted):  # removed tqdm here to avoid issues with tqdm in multiprocessing
-        valid_tide_gauges_for_current_date = []
-        # check if the tide gauges have valid data for this date
-        for tide_gauge_id, current_tide_gauge_station in current_tide_gauge_stations.items():
-            if date in current_tide_gauge_station.timeseries.keys():
-                if current_tide_gauge_station.timeseries[date] != -99999:
-                    valid_tide_gauges_for_current_date.append(tide_gauge_id)
-        # of the tide gauges that have valid data, select 90% of the data for training and 10% for testing
-        number_of_tide_gauges_for_training = int(len(valid_tide_gauges_for_current_date) * 0.9)
-        if ((
-                len(valid_tide_gauges_for_current_date) - number_of_tide_gauges_for_training) <=
-                settings.baseline_number_of_tide_gauges_for_testing):
-            number_of_tide_gauges_for_training = len(
-                valid_tide_gauges_for_current_date) - settings.baseline_number_of_tide_gauges_for_testing
-        if number_of_tide_gauges_for_training < number_of_principal_components:
+    for (date, mean_reconstruction_error_for_date, max_reconstruction_error_for_date, min_reconstruction_error_for_date,
+         number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date) in results:
+        if mean_reconstruction_error_for_date is None:
             continue
-        min_reconstruction_error_for_date[date] = float('inf')
-        max_reconstruction_error_for_date[date] = 0
-        mean_reconstruction_error_for_date[date] = 0
-        number_of_training_tide_gauges_for_date[date] = number_of_tide_gauges_for_training
-        number_of_testing_tide_gauges_for_date[date] = len(
-            valid_tide_gauges_for_current_date) - number_of_tide_gauges_for_training
-        for _ in range(settings.reconstruction_iterations):
-            training_tide_gauges_for_current_date = random.sample(valid_tide_gauges_for_current_date,
-                                                                  number_of_tide_gauges_for_training)
-            testing_tide_gauges_for_current_date = [tide_gauge for tide_gauge in valid_tide_gauges_for_current_date if
-                                                    tide_gauge not in training_tide_gauges_for_current_date]
-            tide_gauge_value_for_reconstruction = np.array(np.zeros((len(training_tide_gauges_for_current_date), 1)))
-            for i, station_id in enumerate(training_tide_gauges_for_current_date):
-                current_tide_gauge_station = current_tide_gauge_stations[station_id]
-                value = current_tide_gauge_station.timeseries_corrected_reference_datum[date]
-                tide_gauge_value_for_reconstruction[i] = value
+        mean_reconstruction_error_for_date[date] = mean_reconstruction_error_for_date
+        min_reconstruction_error_for_date[date] = min_reconstruction_error_for_date
+        max_reconstruction_error_for_date[date] = max_reconstruction_error_for_date
+        number_of_testing_tide_gauges_for_date[date] = number_of_testing_tide_gauges_for_date
+        number_of_training_tide_gauges_for_date[date] = number_of_training_tide_gauges_for_date
 
-            # get the principal components for the training data
-            reduced_eofs = np.array(
-                np.zeros((len(tide_gauge_value_for_reconstruction), number_of_principal_components)))
-            for i, tide_gauge_id in enumerate(training_tide_gauges_for_current_date):
-                lat, lon = tide_gauge_to_lat_lon[tide_gauge_id]
-                idx, idy = current_tide_gauge_stations[tide_gauge_id].closest_grid_point
-                try:
-                    reduced_eofs[i] = eof_data_array[:number_of_principal_components, idx, idy]
-                    # reduced_eofs[i, :] = eof_dataset.eof.loc[
-                    #                          dict(latitude=lat, longitude=lon)
-                    #                      ][:number_of_principal_components].values
-                except KeyError:
-                    logger.warning(
-                        f"{lat}, {lon} not in eof dataset for date {date}, skipping tide gauge {tide_gauge_id}")
-            # assume error for the tide gauge data
-            sigma_squared = 1.0
-            error_covariance_matrix = sigma_squared * np.eye(len(tide_gauge_value_for_reconstruction))
-            inverse_error_covariance_matrix = np.linalg.inv(error_covariance_matrix)
-
-            # weigth tide gauges with inverse error covariance matrix
-            weighted_tide_gauges_for_current_date = np.dot(inverse_error_covariance_matrix,
-                                                           tide_gauge_value_for_reconstruction)
-
-            # least squares regression to estimate the PCs
-            coefficients, residuals, rank, singular_values = np.linalg.lstsq(reduced_eofs,
-                                                                             weighted_tide_gauges_for_current_date,
-                                                                             rcond=None)
-            estimated_pc_for_date[date] = coefficients
-
-            # reconstruct sea level for current date
-            _, lat_size, lon_size = eof_data_array.shape
-            reconstructed_data_array = np.zeros(lat_size, lon_size)  # shape (latitude, longitude)
-            for i in range(number_of_principal_components):
-                current_eof = np.array(eof_data_array[i, :, :])  # shape (latitude, longitude)
-                current_alpha = coefficients[i]
-                current_h_r = current_eof * current_alpha
-                reconstructed_data_array = np.sum([reconstructed_data_array, current_h_r], axis=0)
-            # reconstructed_data_arary_for_date = xarray.DataArray(
-            #     summed_h_r,
-            #     coords={
-            #         "latitude": eof_dataset.latitude,
-            #         "longitude": eof_dataset.longitude,
-            #         "time": date
-            #     },
-            #     dims=["latitude", "longitude"]
-            # )
-            # save to file
-            # use testing data to compare the reconstruction
-            # for each testing tide gauge, take the value for the current date and check how close the value is to the
-            # reconstructed sla at the closest lat-lon-point
-            reconstruction_error = 0
-            for testing_station_id in testing_tide_gauges_for_current_date:
-                idx, idy = current_tide_gauge_stations[testing_station_id].closest_grid_point
-                value_reconstructed = reconstructed_data_array[idx, idy]
-                current_testing_station = current_tide_gauge_stations[testing_station_id]
-                value_testing_station = current_testing_station.timeseries_corrected_reference_datum[date]
-                difference = abs(value_testing_station - value_reconstructed)
-                reconstruction_error += difference
-            reconstruction_error /= len(testing_tide_gauges_for_current_date)
-            if reconstruction_error < min_reconstruction_error_for_date[date]:
-                min_reconstruction_error_for_date[date] = reconstruction_error
-            if reconstruction_error > max_reconstruction_error_for_date[date]:
-                max_reconstruction_error_for_date[date] = reconstruction_error
-            mean_reconstruction_error_for_date[date] += reconstruction_error
-        mean_reconstruction_error_for_date[date] /= settings.reconstruction_iterations
     return (mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date,
+            number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date)
+
+
+def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaugeStation], settings: GlobalSettings,
+                 tide_gauge_to_lat_lon: dict[int, tuple[float, float]], eof_data_array_path: str):
+    """
+    Process a single date for reconstruction.
+    :return:
+    """
+    eof_data_array = np.load(eof_data_array_path, mmap_mode='r')
+    valid_tide_gauges_for_current_date = []
+    # check if the tide gauges have valid data for this date
+    for tide_gauge_id, current_tide_gauge_station in current_tide_gauge_stations.items():
+        if date in current_tide_gauge_station.timeseries.keys():
+            if current_tide_gauge_station.timeseries[date] != -99999:
+                valid_tide_gauges_for_current_date.append(tide_gauge_id)
+    # of the tide gauges that have valid data, select 90% of the data for training and 10% for testing
+    number_of_tide_gauges_for_training = int(len(valid_tide_gauges_for_current_date) * 0.9)
+    if ((
+            len(valid_tide_gauges_for_current_date) - number_of_tide_gauges_for_training) <=
+            settings.baseline_number_of_tide_gauges_for_testing):
+        number_of_tide_gauges_for_training = len(
+            valid_tide_gauges_for_current_date) - settings.baseline_number_of_tide_gauges_for_testing
+    if number_of_tide_gauges_for_training < settings.number_of_principal_components:
+        return None, None, None, None, None
+    min_reconstruction_error_for_date = float('inf')
+    max_reconstruction_error_for_date = 0
+    mean_reconstruction_error_for_date = 0
+    number_of_training_tide_gauges_for_date = number_of_tide_gauges_for_training
+    number_of_testing_tide_gauges_for_date = len(
+        valid_tide_gauges_for_current_date) - number_of_tide_gauges_for_training
+    for _ in range(settings.reconstruction_iterations):
+        training_tide_gauges_for_current_date = random.sample(valid_tide_gauges_for_current_date,
+                                                              number_of_tide_gauges_for_training)
+        testing_tide_gauges_for_current_date = [tide_gauge for tide_gauge in valid_tide_gauges_for_current_date if
+                                                tide_gauge not in training_tide_gauges_for_current_date]
+        tide_gauge_value_for_reconstruction = np.array(np.zeros((len(training_tide_gauges_for_current_date), 1)))
+        for i, station_id in enumerate(training_tide_gauges_for_current_date):
+            current_tide_gauge_station = current_tide_gauge_stations[station_id]
+            value = current_tide_gauge_station.timeseries_corrected_reference_datum[date]
+            tide_gauge_value_for_reconstruction[i] = value
+
+        # get the principal components for the training data
+        reduced_eofs = np.array(
+            np.zeros((len(tide_gauge_value_for_reconstruction), settings.number_of_principal_components)))
+        for i, tide_gauge_id in enumerate(training_tide_gauges_for_current_date):
+            lat, lon = tide_gauge_to_lat_lon[tide_gauge_id]
+            idx, idy = current_tide_gauge_stations[tide_gauge_id].closest_grid_point
+            try:
+                reduced_eofs[i] = eof_data_array[:settings.number_of_principal_components, idx, idy]
+                # reduced_eofs[i, :] = eof_dataset.eof.loc[
+                #                          dict(latitude=lat, longitude=lon)
+                #                      ][:number_of_principal_components].values
+            except KeyError:
+                logger.warning(
+                    f"{lat}, {lon} not in eof dataset for date {date}, skipping tide gauge {tide_gauge_id}")
+        # assume error for the tide gauge data
+        sigma_squared = 1.0
+        error_covariance_matrix = sigma_squared * np.eye(len(tide_gauge_value_for_reconstruction))
+        inverse_error_covariance_matrix = np.linalg.inv(error_covariance_matrix)
+
+        # weigth tide gauges with inverse error covariance matrix
+        weighted_tide_gauges_for_current_date = np.dot(inverse_error_covariance_matrix,
+                                                       tide_gauge_value_for_reconstruction)
+
+        # least squares regression to estimate the PCs
+        coefficients, residuals, rank, singular_values = np.linalg.lstsq(reduced_eofs,
+                                                                         weighted_tide_gauges_for_current_date,
+                                                                         rcond=None)
+        estimated_pc_for_date = coefficients
+        # reconstruct sea level for current date
+        _, lat_size, lon_size = eof_data_array.shape
+        reconstructed_data_array = np.zeros(lat_size, lon_size)  # shape (latitude, longitude)
+        for i in range(settings.number_of_principal_components):
+            current_eof = np.array(eof_data_array[i, :, :])  # shape (latitude, longitude)
+            current_alpha = coefficients[i]
+            current_h_r = current_eof * current_alpha
+            reconstructed_data_array = np.sum([reconstructed_data_array, current_h_r], axis=0)
+
+        # for each testing tide gauge, take the value for the current date and check how close the value is to the
+        # reconstructed sla at the closest lat-lon-point
+        reconstruction_error = 0
+        for testing_station_id in testing_tide_gauges_for_current_date:
+            idx, idy = current_tide_gauge_stations[testing_station_id].closest_grid_point
+            value_reconstructed = reconstructed_data_array[idx, idy]
+            current_testing_station = current_tide_gauge_stations[testing_station_id]
+            value_testing_station = current_testing_station.timeseries_corrected_reference_datum[date]
+            difference = abs(value_testing_station - value_reconstructed)
+            reconstruction_error += difference
+        reconstruction_error /= len(testing_tide_gauges_for_current_date)
+        if reconstruction_error < min_reconstruction_error_for_date:
+            min_reconstruction_error_for_date = reconstruction_error
+        if reconstruction_error > max_reconstruction_error_for_date:
+            max_reconstruction_error_for_date = reconstruction_error
+        mean_reconstruction_error_for_date += reconstruction_error
+    # calculate mean reconstruction error for the date
+    mean_reconstruction_error_for_date /= settings.reconstruction_iterations
+
+    return (date, mean_reconstruction_error_for_date, max_reconstruction_error_for_date,
+            min_reconstruction_error_for_date,
             number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date)
 
 
