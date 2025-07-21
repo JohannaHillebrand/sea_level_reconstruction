@@ -70,11 +70,14 @@ def reconstruct_cluster(cluster_id: int, lat_lon_pairs: list[tuple[float, float]
         for date in tide_gauge_stations_for_cluster[tide_gauge_id].timeseries.keys():
             all_dates.add(date)
     all_dates_sorted = sorted(list(all_dates))
+    min_lat = sea_level_data.latitude.min().item()
+    min_lon = sea_level_data.longitude.min().item()
+    resolution = (sea_level_data.latitude[1].item() - sea_level_data.latitude[0].item())
     # reconstruct the sea level data for each date using the tide gauges
     (mean_reconstruction_error_for_date, min_reconstruction_error_for_date, max_reconstruction_error_for_date,
      number_of_testing_tide_gauges_for_date, number_of_training_tide_gauges_for_date) = (
         reconstruct_sla_for_date(all_dates_sorted, tide_gauge_stations_for_cluster, tide_gauge_to_lat_lon, settings,
-                                 eof_data_array))
+                                 eof_data_array, min_lat, min_lon, resolution))
 
     # plot reconstruction error for cluster over time
     plotting.plot_reconstruction_error_over_time(mean_reconstruction_error_for_date, max_reconstruction_error_for_date,
@@ -158,7 +161,8 @@ def create_data_array_for_pca(cluster_id, grid_points, lat_lon_pairs, sea_level_
 def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
                              current_tide_gauge_stations: dict[int, TideGaugeStation],
                              tide_gauge_to_lat_lon: dict[int, tuple[float, float]],
-                             settings: GlobalSettings, eof_data_array: np.ndarray):
+                             settings: GlobalSettings, eof_data_array: np.ndarray, min_lat: float, min_lon: float,
+                             resolution: float):
     """
     Reconstruct the sea level anomaly for each date using the tide gauges
     for each date, perform reconstruction a certain number of times with different, randomly selected tide gauges
@@ -174,7 +178,8 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
     with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as temp_file:
         np.save(temp_file.name, eof_data_array)
         eof_data_array_path = temp_file.name
-    tasks = [[date, current_tide_gauge_stations, settings, tide_gauge_to_lat_lon, eof_data_array_path] for date in
+    tasks = [[date, current_tide_gauge_stations, settings, tide_gauge_to_lat_lon, eof_data_array_path, min_lat, min_lon,
+              resolution] for date in
              all_dates_sorted]
     results = Parallel(n_jobs=-2, verbose=1)(delayed(process_date)(*task) for task in tasks)
 
@@ -198,7 +203,8 @@ def reconstruct_sla_for_date(all_dates_sorted: list[datetime],
 
 
 def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaugeStation], settings: GlobalSettings,
-                 tide_gauge_to_lat_lon: dict[int, tuple[float, float]], eof_data_array_path: str):
+                 tide_gauge_to_lat_lon: dict[int, tuple[float, float]], eof_data_array_path: str, lat_min, lon_min,
+                 resolution):
     """
     Process a single date for reconstruction.
     :return:
@@ -240,7 +246,11 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
         reduced_eofs = np.array(
             np.zeros((len(tide_gauge_value_for_reconstruction), settings.number_of_principal_components)))
         for i, tide_gauge_id in enumerate(training_tide_gauges_for_current_date):
+            current_tide_gauge_station = current_tide_gauge_stations[tide_gauge_id]
             lat, lon = tide_gauge_to_lat_lon[tide_gauge_id]
+            if current_tide_gauge_station.closest_grid_point is None:
+                current_tide_gauge_station.closest_grid_point = helper.lat_lon_to_grid_point_id(lat, lon, lat_min,
+                                                                                                lon_min, resolution)
             idx, idy = current_tide_gauge_stations[tide_gauge_id].closest_grid_point
             try:
                 reduced_eofs[i] = eof_data_array[:settings.number_of_principal_components, idx, idy]
@@ -266,7 +276,7 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
         estimated_pc_for_date = coefficients
         # reconstruct sea level for current date
         _, lat_size, lon_size = eof_data_array.shape
-        reconstructed_data_array = np.zeros(lat_size, lon_size)  # shape (latitude, longitude)
+        reconstructed_data_array = np.zeros((lat_size, lon_size))  # shape (latitude, longitude)
         for i in range(settings.number_of_principal_components):
             current_eof = np.array(eof_data_array[i, :, :])  # shape (latitude, longitude)
             current_alpha = coefficients[i]
@@ -277,7 +287,12 @@ def process_date(date: datetime, current_tide_gauge_stations: dict[int, TideGaug
         # reconstructed sla at the closest lat-lon-point
         reconstruction_error = 0
         for testing_station_id in testing_tide_gauges_for_current_date:
-            idx, idy = current_tide_gauge_stations[testing_station_id].closest_grid_point
+            testing_station = current_tide_gauge_stations[testing_station_id]
+            if testing_station.closest_grid_point is None:
+                lat, lon = tide_gauge_to_lat_lon[testing_station_id]
+                testing_station.closest_grid_point = helper.lat_lon_to_grid_point_id(lat, lon, lat_min, lon_min,
+                                                                                     resolution)
+            idx, idy = testing_station.closest_grid_point
             value_reconstructed = reconstructed_data_array[idx, idy]
             current_testing_station = current_tide_gauge_stations[testing_station_id]
             value_testing_station = current_testing_station.timeseries_corrected_reference_datum[date]
